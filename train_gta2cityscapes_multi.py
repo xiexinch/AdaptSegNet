@@ -1,6 +1,7 @@
 import argparse
 import torch
 import torch.nn as nn
+import time
 from torch.utils import data, model_zoo
 import numpy as np
 import pickle
@@ -20,6 +21,7 @@ from model.discriminator import FCDiscriminator
 from utils.loss import CrossEntropy2d
 from dataset.gta5_dataset import GTA5DataSet
 from dataset.cityscapes_dataset import cityscapesDataSet
+from dataset.dark_zurich_dataset import DarkZurichDataset
 
 IMG_MEAN = np.array((104.00698793, 116.66876762, 122.67891434), dtype=np.float32)
 
@@ -27,24 +29,26 @@ MODEL = 'DeepLab'
 BATCH_SIZE = 1
 ITER_SIZE = 1
 NUM_WORKERS = 4
-DATA_DIRECTORY = './data/GTA5'
-DATA_LIST_PATH = './dataset/gta5_list/train.txt'
+# DATA_DIRECTORY = './data/GTA5'
+# DATA_LIST_PATH = './dataset/gta5_list/train.txt'
+DATA_DIRECTORY = './data/cityscapes'
+DATA_LIST_PATH = './dataset/cityscapes_list/train.txt'
 IGNORE_LABEL = 255
-INPUT_SIZE = '1280,720'
-DATA_DIRECTORY_TARGET = './data/Cityscapes/data'
-DATA_LIST_PATH_TARGET = './dataset/cityscapes_list/train.txt'
-INPUT_SIZE_TARGET = '1024,512'
+INPUT_SIZE = (2048, 1024)
+DATA_DIRECTORY_TARGET = './data/dark_zurich/train/rgb_anon'
+DATA_LIST_PATH_TARGET = './dataset/lists/zurich_train_night.txt'
+INPUT_SIZE_TARGET = (1920, 1080)
 LEARNING_RATE = 2.5e-4
 MOMENTUM = 0.9
 NUM_CLASSES = 19
 NUM_STEPS = 250000
 NUM_STEPS_STOP = 150000  # early stopping
 POWER = 0.9
-RANDOM_SEED = 1234
+RANDOM_SEED = 2022
 RESTORE_FROM = 'http://vllab.ucmerced.edu/ytsai/CVPR18/DeepLab_resnet_pretrained_init-f81d91e8.pth'
 SAVE_NUM_IMAGES = 2
 SAVE_PRED_EVERY = 5000
-SNAPSHOT_DIR = './snapshots/'
+SNAPSHOT_DIR = './work_dirs/snapshots/'
 WEIGHT_DECAY = 0.0005
 
 LEARNING_RATE_D = 1e-4
@@ -53,7 +57,7 @@ LAMBDA_ADV_TARGET1 = 0.0002
 LAMBDA_ADV_TARGET2 = 0.001
 GAN = 'Vanilla'
 
-TARGET = 'cityscapes'
+TARGET = 'dark_zurich'
 SET = 'train'
 
 
@@ -169,15 +173,33 @@ def adjust_learning_rate_D(optimizer, i_iter):
     if len(optimizer.param_groups) > 1:
         optimizer.param_groups[1]['lr'] = lr * 10
 
+class Logger(object):
+    def __init__(self, filename):
+        self.terminal = sys.stdout
+        self.log = open(filename, 'a')
+
+    def write(self, message):
+        self.terminal.write(message)
+        self.log.write(message)
+        self.log.flush()
+
+    def flush(self):
+        pass
+
 
 def main():
     """Create the model and start the training."""
+    if not os.path.exists(args.snapshot_dir):
+        os.makedirs(args.snapshot_dir)
+    timestamp = time.strftime('%Y%m%d_%H%M%S', time.localtime())
+    log_file = osp.join(args.snapshot_dir, f'{timestamp}.log')
+    sys.stdout = Logger(log_file)
 
-    w, h = map(int, args.input_size.split(','))
-    input_size = (w, h)
+    # w, h = map(int, args.input_size.split(','))
+    input_size = args.input_size
 
-    w, h = map(int, args.input_size_target.split(','))
-    input_size_target = (w, h)
+    # w, h = map(int, args.input_size_target.split(','))
+    input_size_target = args.input_size_target
 
     cudnn.enabled = True
     gpu = args.gpu
@@ -218,23 +240,28 @@ def main():
     if not os.path.exists(args.snapshot_dir):
         os.makedirs(args.snapshot_dir)
 
-    trainloader = data.DataLoader(
-        GTA5DataSet(args.data_dir, args.data_list, max_iters=args.num_steps * args.iter_size * args.batch_size,
-                    crop_size=input_size,
-                    scale=args.random_scale, mirror=args.random_mirror, mean=IMG_MEAN),
-        batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, pin_memory=True)
+    # trainloader = data.DataLoader(
+    #     GTA5DataSet(args.data_dir, args.data_list, max_iters=args.num_steps * args.iter_size * args.batch_size,
+    #                 crop_size=input_size,
+    #                 scale=args.random_scale, mirror=args.random_mirror, mean=IMG_MEAN),
+    #     batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, pin_memory=True)
 
-    trainloader_iter = enumerate(trainloader)
+    # trainloader_iter = enumerate(trainloader)
 
-    targetloader = data.DataLoader(cityscapesDataSet(args.data_dir_target, args.data_list_target,
+    trainloader = data.DataLoader(cityscapesDataSet(args, args.data_dir, args.data_list,
                                                      max_iters=args.num_steps * args.iter_size * args.batch_size,
-                                                     crop_size=input_size_target,
-                                                     scale=False, mirror=args.random_mirror, mean=IMG_MEAN,
                                                      set=args.set),
                                    batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers,
                                    pin_memory=True)
 
 
+    trainloader_iter = enumerate(trainloader)
+
+    targetloader = data.DataLoader(DarkZurichDataset(args.data_dir_target, args.data_list_target,
+                                                     max_iters=args.num_steps * args.iter_size * args.batch_size,
+                                                     crop_size=(540, 960), set='train'),
+                                   batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers,
+                                   pin_memory=True)
     targetloader_iter = enumerate(targetloader)
 
     # implement model.optim_parameters(args) to handle different models' lr setting
@@ -262,6 +289,8 @@ def main():
     target_label = 1
 
     for i_iter in range(args.num_steps):
+
+        start_time = time.time()
 
         loss_seg_value1 = 0
         loss_adv_target_value1 = 0
@@ -292,7 +321,7 @@ def main():
 
             # train with source
 
-            _, batch = trainloader_iter.next()
+            _, batch = next(trainloader_iter)
             images, labels, _, _ = batch
             images = Variable(images).cuda(args.gpu)
 
@@ -307,13 +336,14 @@ def main():
             # proper normalization
             loss = loss / args.iter_size
             loss.backward()
-            loss_seg_value1 += loss_seg1.data.cpu().numpy()[0] / args.iter_size
-            loss_seg_value2 += loss_seg2.data.cpu().numpy()[0] / args.iter_size
+
+            loss_seg_value1 += loss_seg1.data.cpu().numpy() / args.iter_size
+            loss_seg_value2 += loss_seg2.data.cpu().numpy() / args.iter_size
 
             # train with target
 
-            _, batch = targetloader_iter.next()
-            images, _, _ = batch
+            _, batch = next(targetloader_iter)
+            images, _ = batch
             images = Variable(images).cuda(args.gpu)
 
             pred_target1, pred_target2 = model(images)
@@ -334,8 +364,8 @@ def main():
             loss = args.lambda_adv_target1 * loss_adv_target1 + args.lambda_adv_target2 * loss_adv_target2
             loss = loss / args.iter_size
             loss.backward()
-            loss_adv_target_value1 += loss_adv_target1.data.cpu().numpy()[0] / args.iter_size
-            loss_adv_target_value2 += loss_adv_target2.data.cpu().numpy()[0] / args.iter_size
+            loss_adv_target_value1 += loss_adv_target1.data.cpu().numpy() / args.iter_size
+            loss_adv_target_value2 += loss_adv_target2.data.cpu().numpy() / args.iter_size
 
             # train D
 
@@ -365,8 +395,8 @@ def main():
             loss_D1.backward()
             loss_D2.backward()
 
-            loss_D_value1 += loss_D1.data.cpu().numpy()[0]
-            loss_D_value2 += loss_D2.data.cpu().numpy()[0]
+            loss_D_value1 += loss_D1.data.cpu().numpy()
+            loss_D_value2 += loss_D2.data.cpu().numpy()
 
             # train with target
             pred_target1 = pred_target1.detach()
@@ -387,27 +417,34 @@ def main():
             loss_D1.backward()
             loss_D2.backward()
 
-            loss_D_value1 += loss_D1.data.cpu().numpy()[0]
-            loss_D_value2 += loss_D2.data.cpu().numpy()[0]
+            loss_D_value1 += loss_D1.data.cpu().numpy()
+            loss_D_value2 += loss_D2.data.cpu().numpy()
 
         optimizer.step()
         optimizer_D1.step()
         optimizer_D2.step()
 
+        iter_time = time.time() - start_time
+        eta = iter_time * (args.num_steps - i_iter)
+        mins, s = divmod(eta, 60)
+        hours, minute = divmod(mins, 60)
+        days, hour = divmod(hours, 24)
+        ETA = f'{int(days)}天{int(hour)}小时{int(minute)}分{int(s)}秒'
+
         print('exp = {}'.format(args.snapshot_dir))
         print(
-        'iter = {0:8d}/{1:8d}, loss_seg1 = {2:.3f} loss_seg2 = {3:.3f} loss_adv1 = {4:.3f}, loss_adv2 = {5:.3f} loss_D1 = {6:.3f} loss_D2 = {7:.3f}'.format(
-            i_iter, args.num_steps, loss_seg_value1, loss_seg_value2, loss_adv_target_value1, loss_adv_target_value2, loss_D_value1, loss_D_value2))
+        'iter = {0:8d}/{1:8d}, loss_seg1 = {2:.3f} loss_seg2 = {3:.3f} loss_adv1 = {4:.3f}, loss_adv2 = {5:.3f} loss_D1 = {6:.3f} loss_D2 = {7:.3f} ETA:{8}'.format(
+            i_iter, args.num_steps, loss_seg_value1, loss_seg_value2, loss_adv_target_value1, loss_adv_target_value2, loss_D_value1, loss_D_value2, ETA))
 
         if i_iter >= args.num_steps_stop - 1:
-            print 'save model ...'
+            print('save model ...')
             torch.save(model.state_dict(), osp.join(args.snapshot_dir, 'GTA5_' + str(args.num_steps_stop) + '.pth'))
             torch.save(model_D1.state_dict(), osp.join(args.snapshot_dir, 'GTA5_' + str(args.num_steps_stop) + '_D1.pth'))
             torch.save(model_D2.state_dict(), osp.join(args.snapshot_dir, 'GTA5_' + str(args.num_steps_stop) + '_D2.pth'))
             break
 
         if i_iter % args.save_pred_every == 0 and i_iter != 0:
-            print 'taking snapshot ...'
+            print('taking snapshot ...')
             torch.save(model.state_dict(), osp.join(args.snapshot_dir, 'GTA5_' + str(i_iter) + '.pth'))
             torch.save(model_D1.state_dict(), osp.join(args.snapshot_dir, 'GTA5_' + str(i_iter) + '_D1.pth'))
             torch.save(model_D2.state_dict(), osp.join(args.snapshot_dir, 'GTA5_' + str(i_iter) + '_D2.pth'))
