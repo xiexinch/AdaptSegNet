@@ -14,7 +14,7 @@ from model.deeplab import Res_Deeplab
 from model.deeplab_multi import DeeplabMulti
 from model.deeplab_vgg import DeeplabVGG
 from dataset.cityscapes_dataset import cityscapesDataSet
-from dataset.dark_zurich_dataset import DarkZurichDataset
+from dataset.zurich_night_dataset import zurich_night_DataSet
 from collections import OrderedDict
 import os
 from PIL import Image
@@ -23,7 +23,7 @@ import matplotlib.pyplot as plt
 import torch.nn as nn
 IMG_MEAN = np.array((104.00698793,116.66876762,122.67891434), dtype=np.float32)
 
-DATA_DIRECTORY = './data/dark_zurich/val'
+DATA_DIRECTORY = './data/dark_zurich/val/rgb_anon/val'
 DATA_LIST_PATH = './dataset/lists/zurich_val.txt'
 SAVE_PATH = './work_dirs/results'
 
@@ -102,8 +102,10 @@ def main():
             args.restore_from = RESTORE_FROM_VGG
 
     if args.restore_from[:4] == 'http' :
+        print('restore form', args.restore_from)
         saved_state_dict = model_zoo.load_url(args.restore_from)
     else:
+        print('restore form', args.restore_from)
         saved_state_dict = torch.load(args.restore_from)
     ### for running different versions of pytorch
     model_dict = model.state_dict()
@@ -115,7 +117,7 @@ def main():
     model.eval()
     model.cuda(gpu0)
 
-    testloader = data.DataLoader(cityscapesDataSet(args.data_dir, args.data_list, crop_size=(1024, 512), mean=IMG_MEAN, scale=False, mirror=False, set=args.set),
+    testloader = data.DataLoader(zurich_night_DataSet(args.data_dir, args.data_list, './dataset/lists/label_zurich.txt', set=args.set),
                                     batch_size=1, shuffle=False, pin_memory=True)
 
 
@@ -125,15 +127,17 @@ def main():
         interp = nn.Upsample(size=(1024, 2048), mode='bilinear')
 
     for index, batch in enumerate(testloader):
-        if index % 100 == 0:
+        if index % 10 == 0:
             print('%d processd' % index)
         image, _, name = batch
         if args.model == 'DeeplabMulti':
-            output1, output2 = model(Variable(image, volatile=True).cuda(gpu0))
-            output = interp(output2).cpu().data[0].numpy()
+            with torch.no_grad():
+                output1, output2 = model(Variable(image, volatile=True).cuda(gpu0))
+                output = interp(output2).cpu().data[0].numpy()
         elif args.model == 'DeeplabVGG' or args.model == 'Oracle':
-            output = model(Variable(image, volatile=True).cuda(gpu0))
-            output = interp(output).cpu().data[0].numpy()
+            with torch.no_grad():
+                output = model(Variable(image, volatile=True).cuda(gpu0))
+                output = interp(output).cpu().data[0].numpy()
 
         output = output.transpose(1,2,0)
         output = np.asarray(np.argmax(output, axis=2), dtype=np.uint8)
