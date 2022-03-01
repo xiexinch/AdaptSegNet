@@ -86,6 +86,7 @@ def main():
     args = get_arguments()
 
     gpu0 = args.gpu
+    STD = 0.16
 
     if not os.path.exists(args.save):
         os.makedirs(args.save)
@@ -122,9 +123,15 @@ def main():
 
 
     if version.parse(torch.__version__) >= version.parse('0.4.0'):
-        interp = nn.Upsample(size=(1024, 2048), mode='bilinear', align_corners=True)
+        interp = nn.Upsample(size=(1080, 1920), mode='bilinear', align_corners=True)
     else:
-        interp = nn.Upsample(size=(1024, 2048), mode='bilinear')
+        interp = nn.Upsample(size=(1080, 1920), mode='bilinear')
+
+    weights = torch.log(torch.FloatTensor(
+        [0.36869696, 0.06084986, 0.22824049, 0.00655399, 0.00877272, 0.01227341, 0.00207795, 0.0055127, 0.15928651,
+         0.01157818, 0.04018982, 0.01218957, 0.00135122, 0.06994545, 0.00267456, 0.00235192, 0.00232904, 0.00098658,
+         0.00413907])).cuda()
+    weights = (torch.mean(weights) - weights) / torch.std(weights) * STD + 1.0
 
     for index, batch in enumerate(testloader):
         if index % 10 == 0:
@@ -133,7 +140,10 @@ def main():
         if args.model == 'DeeplabMulti':
             with torch.no_grad():
                 output1, output2 = model(Variable(image, volatile=True).cuda(gpu0))
-                output = interp(output2).cpu().data[0].numpy()
+            weights_prob = weights.expand(output2.size()[0], output2.size()[3], output2.size()[2], 19)
+            weights_prob = weights_prob.transpose(1, 3)
+            output2 = output2 * weights_prob
+            output = interp(output2).cpu().data[0].numpy()
         elif args.model == 'DeeplabVGG' or args.model == 'Oracle':
             with torch.no_grad():
                 output = model(Variable(image, volatile=True).cuda(gpu0))
